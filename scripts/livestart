@@ -1,0 +1,25 @@
+#!/bin/bash
+
+# add items to favourites
+dconf write /org/gnome/shell/favorite-apps "['gparted.desktop', 'firefox.desktop', 'empathy.desktop',  'libreoffice-writer.desktop', 'nautilus.desktop', 'yelp.desktop', 'Installer.desktop']"
+
+# show files on desktop
+gsettings set org.gnome.desktop.background show-desktop-icons true
+
+mkdir -p ~/Desktop
+cat > ~/Desktop/Installer.desktop << "EOF"
+#!/usr/bin/env xdg-open
+[Desktop Entry]
+Version=1.0
+Type=Application
+Terminal=false
+Icon=system-software-install
+Name[en_US]=Install Avouch Linux
+Exec=/usr/bin/adi %u
+Name=Avouch Linux Installer
+Comment=Install Avouch Linux
+EOF
+
+chmod +x ~/Desktop/Installer.desktop
+
+/usr/bin/adi

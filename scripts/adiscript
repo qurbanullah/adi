@@ -1,0 +1,467 @@
+#!/bin/bash
+
+# Avouch Linux installer
+
+DRIVE="${1}"
+USERNAME="${2}"
+PASSWORD="${3}"
+ROOTPASSWD="${4}"
+HOSTNAME="${5}"
+FULLNAME="${@:6}"
+
+FILESYSTEM="ext4"
+MOUNTPOINT="/mnt"
+CHROOTDIR="/mnt"
+DATA_DRIVE="${DRIVE}"
+EFI_MOUNTPOINT="/boot/efi"
+DATA_MOUNTPOINT="${MOUNTPOINT}"
+ARCH="$(uname -m)"
+BASENAME="$(basename "${PWD}")"
+KERVER=$(uname -r)
+
+echo "Drive is    : ${DRIVE}"
+echo "Username is : ${USERNAME}"
+echo "Password is : ${PASSWORD}"
+echo "Root Password is : ${ROOTPASSWD}"
+echo "Hostname is : ${HOSTNAME}"
+echo "Fullname is : ${FULLNAME}"
+
+### example ## order of argument is important
+# ./adiscript "<drive>" "<username>" "<user password>" "<root password>" "<host/computer name>" "<full name>"
+
+# ./adiscript "/dev/sda3" "avouch" "Avouch" "Avouch" "avouch-pc" "Qurban Ullah"
+
+
+### change to english locale!
+export LANG="en_US"
+
+### check for root
+check_root () {
+	if ! [[ ${UID} -eq 0 ]]; then 
+		echo "ERROR: Please run installer as root user!"
+		exit 1
+	fi
+}
+
+check_root
+
+# get_uuid()
+# converts /dev/[hs]d?[0-9] devices to UUIDs
+#
+# parameters: device file
+# outputs:    UUID on success
+#             nothing on failure
+# returns:    nothing
+get_uuid()
+{
+    if [ "${DRIVE%%/[hs]d?[0-9]}" != "${DRIVE}" ]; then
+        echo "$(blkid -s UUID -o value ${DRIVE})"
+    fi
+}
+
+get_fstype()
+{
+    if [ "${DRIVE%%/[hs]d?[0-9]}" != "${DRIVE}" ]; then
+        echo "$(blkid -s TYPE -o value ${DRIVE})"
+    fi
+}
+
+get_uefi_drive(){
+
+	# find the EFI system drive , 
+	# grep EFI system drive string, starting with /dev and end at :.
+	echo "$(fdisk -l | grep -n 'EFI' | grep -o '/dev[^ ]*')"
+}
+
+get_swapdrive(){
+
+	# blkid and find the swap drive , 
+	# grep swap drive string starting with /dev and end at :.
+	echo "$(blkid | grep -n 'swap' | grep -o '/dev[^:]*')"
+
+}
+
+format_volume () {
+	
+	# First unmount the partition
+	if grep -qs $DRIVE /proc/mounts; then
+		echo "Filesystem is mounted."
+		umount -l $DRIVE || exit 1		
+	else
+			echo "Filesystem is not mounted."
+	fi
+		
+	# formate partition
+	echo "Installing ${FILESYSTEM} filesystem on ${DRIVE}"
+	echo y | mkfs.${FILESYSTEM} "${DRIVE}"  || exit 1
+
+}
+
+mount_volume () {
+
+	# format partition
+	local fstype="$(get_fstype ${DRIVE})"
+
+	[ -e "${MOUNTPOINT}" ] || mkdir "${MOUNTPOINT}"
+	mount -t ${fstype} $DRIVE $MOUNTPOINT || exit 1
+	
+    if [[ "${uefi_drive}" != '' ]];then
+		# mount uefi system drive
+		mount -t vfat ${uefi_drive} ${EFI_MOUNTPOINT}
+	fi
+
+	# cd to mountpoint
+	cd "$MOUNTPOINT"
+	if [ -d "$MOUNTPOINT/var/avouch/log" ]; then
+		rm -r "$MOUNTPOINT/var/avouch/log"
+	else
+		mkdir -p "$MOUNTPOINT/var/avouch/log"
+		touch "$MOUNTPOINT/var/avouch/log/avouch-installl.log"
+
+	fi
+
+}
+
+chroot_mount(){
+
+	[ -e "${MOUNTPOINT}/sys" ] || mkdir "${MOUNTPOINT}/sys"
+	[ -e "${MOUNTPOINT}/proc" ] || mkdir "${MOUNTPOINT}/proc"
+	[ -e "${MOUNTPOINT}/dev" ] || mkdir "${MOUNTPOINT}/dev"
+	mount -t sysfs sysfs "${MOUNTPOINT}/sys"
+	mount -t proc proc "${MOUNTPOINT}/proc"
+	mount -o bind /dev "${MOUNTPOINT}/dev"
+
+}
+
+# umount_volume()
+# unmount the mount point and slected partition
+#
+umount_volume(){
+
+	# change directory from mountpoint
+	cd /
+	umount $MOUNTPOINT/proc
+	umount $MOUNTPOINT/sys
+	umount $MOUNTPOINT/dev
+	# unmount the drive
+	umount -l ${MOUNTPOINT}
+
+}
+
+### check packages install files
+copy_files () {
+
+	echo "Copying files... This will take few minutes, depending upon your system"
+	### copy the hard drive files to the mounted drive
+	rsync -ar --one-file-system \
+	--exclude=/proc/* \
+	--exclude=/dev/* \
+	--exclude=/sys/* \
+	--exclude=/tmp/* \
+	--exclude=/home/liveuser/ \
+	--exclude=/root/* \
+	--exclude=/lost+found \
+	--exclude=/build/ \
+	--exclude=/run/media/liveuser/ \
+	--exclude=/run/media/avouch/ \
+	--exclude=/var/mail/* \
+	--exclude=/var/tmp/* \
+	--exclude=/var/log/journal/ \
+	--exclude=/etc/machine-id \
+	--exclude=/etc/fstab \
+	--exclude=/etc/hosts \
+	--exclude=/etc/timezone \
+	--exclude=/etc/localtime \
+	--exclude=/etc/X11/xorg.conf* \
+	--exclude=/etc/gdm/custom.conf \
+	--exclude=${MOUNTPOINT} / ${MOUNTPOINT}
+
+}
+
+fstab_setup(){
+
+	#drive_uuid=( $( echo $(blkid -s UUID -o value ${DRIVE})))
+	local drive_uuid="$(get_uuid ${DRIVE})"
+	local root_drive="UUID=${drive_uuid}"
+	local fstype="$(get_fstype ${DRIVE})"
+	local swap_drive="$(get_swapdrive)"
+
+	echo "Root partition uuid is : ${root_drive}"
+	echo "Swap partition is : ${root_drive}"
+
+	echo "${root_drive}   /   ${fstype}   defaults   0   1" >> "${MOUNTPOINT}/etc/fstab"
+	if [ "${swap_drive}" != " " ]; then
+		echo "${swap_drive}  none   swap   defaults   0    0" >> "${MOUNTPOINT}/etc/fstab"
+	else 
+		echo "No swap drive found"
+	fi
+
+}
+
+genrate_locale(){
+
+	### change to english locale!
+	#chroot ${CHROOTDIR} export LANG="en_US"
+
+	# generating locales
+	echo "Generating locales..."
+	sed -i 's/#en_GB/en_GB/g' ${MOUNTPOINT}/etc/locale.gen
+	sed -i 's/#en_US/en_US/g' ${MOUNTPOINT}/etc/locale.gen
+	chroot ${CHROOTDIR} /usr/bin/locale-gen
+
+	rm ${MOUNTPOINT}/etc/resolv.conf 
+	rm ${MOUNTPOINT}/etc/hostname
+	echo ${HOSTNAME} > ${MOUNTPOINT}/etc/hostname
+	echo "127.0.0.1    localhost.localdomain    ${HOSTNAME}" >> ${MOUNTPOINT}/etc/hosts
+	#chroot ${CHROOTDIR} hostnamectl set-hostname "${HOSTNAME}"
+
+	# ca-certificates
+	echo "Updating ca-certificates..."
+	#export LC_ALL=C
+	chroot ${CHROOTDIR} /usr/bin/update-ca-trust
+	#chroot ${CHROOTDIR} /usr/bin/setup-nsssysinit.sh on
+	#chroot ${CHROOTDIR} /usr/bin/ca-legacy install
+	chroot ${CHROOTDIR} unbound-anchor -a "/etc/unbound/root.key"
+	echo "ca-certificates updated"
+	
+}
+
+systemd_setup(){
+
+	echo "Generating systemd machine id..."
+	chroot ${CHROOTDIR} systemd-machine-id-setup
+
+	echo "updating journalctl cataloge..."
+	chroot ${CHROOTDIR} /usr/lib/systemd/systemd-random-seed save
+	chroot ${CHROOTDIR} journalctl --update-catalog
+
+	echo "creating systemd-tmpfiles..."
+	chroot ${CHROOTDIR} systemd-tmpfiles --create
+
+	echo "creating systemd-sysuser..."
+	chroot ${CHROOTDIR} systemd-sysusers
+
+	# Apply ACL to the journal directory
+	chroot ${CHROOTDIR} setfacl -Rnm g:wheel:rx,d:g:wheel:rx,g:adm:rx,d:g:adm:rx /var/log/journal/
+
+	# enable services by systemctl preset
+	echo "Generating systemd preset..."
+	chroot ${CHROOTDIR} systemctl preset \
+	remote-fs.target \
+	getty@.service \
+	serial-getty@.service \
+	console-getty.service \
+	debug-shell.service \
+	systemd-timesyncd.service \
+	systemd-networkd.service \
+	systemd-networkd-wait-online.service \
+	systemd-resolved.service \
+	lvm2-lvmetad.service \
+	lvm2-monitor.service \
+	avahi-daemon.service \
+	bluetooth.service \
+	ModemManager.service \
+	NetworkManager.service \
+	>/dev/null 2>&1 || :
+	
+	# enable one of the available display manger service.
+    if [ -f ${MOUNTPOINT}/usr/lib/systemd/system/gdm.service ]; then
+            chroot ${CHROOTDIR} systemctl enable gdm.service
+        elif [ -f ${MOUNTPOINT}/usr/lib/systemd/system/sddm.service ]; then
+            chroot ${CHROOTDIR} systemctl enable sddm.service
+        elif [ -f ${MOUNTPOINT}/usr/lib/systemd/system/lxdm.service ]; then
+            chroot ${CHROOTDIR} systemctl enable lxdm.service
+    fi
+
+	
+    # Enable xdg-user-dirs-update by default
+	chroot ${CHROOTDIR} systemctl --global enable xdg-user-dirs-update.service
+
+	# update udev dtabase
+	chroot ${CHROOTDIR} udevadm hwdb --update
+}
+
+generate_cache(){
+
+	echo "ldconfig..."
+	chroot ${CHROOTDIR} /usr/bin/ldconfig
+
+	# fonts cache
+	echo "Generating fonts cache..."
+	chroot ${CHROOTDIR} fc-cache -f
+	chroot ${CHROOTDIR} mkfontdir /usr/share/fonts/*
+
+	# gdk-pixbuf update cache
+	echo "Updating gdk-pixbuf cache..."
+	chroot ${CHROOTDIR} /usr/bin/gdk-pixbuf-query-loaders --update-cache
+
+	# pango modules
+	echo "Updating pango modules cache..."
+	chroot ${CHROOTDIR} mkdir -p /etc/pango
+	chroot ${CHROOTDIR} touch /etc/pango/pango.modules
+	chroot ${CHROOTDIR} /usr/bin/pango-querymodules > /etc/pango/pango.modules
+	chroot ${CHROOTDIR} /usr/bin/pango-querymodules --update-cache
+
+	# gtk cache
+	echo "Updating gtk2 cache..."
+	chroot ${CHROOTDIR} /usr/bin/gtk-query-immodules-2.0 --update-cache
+
+	# gtk3 cache
+	echo "Updating gtk3 cache..."
+	chroot ${CHROOTDIR} /usr/bin/gtk-query-immodules-3.0 --update-cache
+
+	# glib compile schema
+	echo "Compiling glib schemas"
+	chroot ${CHROOTDIR} /usr/bin/glib-compile-schemas /usr/share/glib-2.0/schemas
+
+	# icon cache
+	echo "Updating icone cache..."
+	chroot ${CHROOTDIR} /usr/bin/gtk-update-icon-cache -q -t -f /usr/share/icons/hicolor
+	chroot ${CHROOTDIR} /usr/bin/gtk-update-icon-cache -q -t -f /usr/share/icons/locolor
+	chroot ${CHROOTDIR} /usr/bin/gtk-update-icon-cache -q -t -f /usr/share/icons/gnome
+	chroot ${CHROOTDIR} /usr/bin/gtk-update-icon-cache -q -t -f /usr/share/icons/Adwaita
+
+	# mime database
+	echo "Updating mime-database..."
+	chroot ${CHROOTDIR} /usr/bin/update-mime-database /usr/share/mime
+
+	# desktop database
+	chroot ${CHROOTDIR} /usr/bin/update-desktop-database -q
+
+}
+
+add_user(){
+
+	# first remove liveuser
+	echo "Deleting liveuser..."
+	chroot ${CHROOTDIR} userdel -fr liveuser
+
+	# remove live user directory if still exists
+	#if [ -d ${MOUNTPOINT}/home/liveuser ]; then
+	#	rm -r ${MOUNTPOINT}/home/liveuser
+	#fi
+
+	echo "Adding user ${USERNAME}..."
+	chroot ${CHROOTDIR} useradd -c "${FULLNAME}" -m "${USERNAME}"
+	chroot ${CHROOTDIR} usermod -a -G wheel "${USERNAME}"
+
+	chroot ${CHROOTDIR} passwd -d "${USERNAME}" > /dev/null
+	$(echo -e "${PASSWORD}\n${PASSWORD}" | chroot ${CHROOTDIR} passwd "${USERNAME}")
+	echo "Password for ${USERNAME} is set to ${PASSWORD}"
+
+	chroot ${CHROOTDIR} passwd -d "root" > /dev/null
+	$(echo -e "${ROOTPASSWD}\n${ROOTPASSWD}" | chroot ${CHROOTDIR} passwd "root")
+	echo "Password for root is set to ${ROOTPASSWD}"
+
+	chroot ${CHROOTDIR} grpck
+	chroot ${CHROOTDIR} pwconv
+	chroot ${CHROOTDIR} grpconv
+
+	# incase of failure
+	chroot ${CHROOTDIR} touch /root/.Xauthority
+	chroot ${CHROOTDIR} touch /home/${USERNAME}/.Xauthority
+	chroot ${CHROOTDIR} chown ${USERNAME}  /home/${USERNAME}/.Xauthority
+
+}
+
+final_setting(){
+
+	# enable first start
+	sed -i "s/livestart/firststart/g" "${MOUNTPOINT}/etc/xdg/autostart/avouch-first-start.desktop"
+
+	# make journalctl log dir
+	mkdir -p ${MOUNTPOINT}/var/log/journal/remote
+
+	# fix for polkit until all packagesare updates for polkity group 70
+	chown 70:0 "${MOUNTPOINT}/etc/polkit-1/rules.d"
+	chown 70:0 "${MOUNTPOINT}/usr/share/polkit-1/rules.d"
+
+	chmod 700 "${MOUNTPOINT}/etc/polkit-1/rules.d"
+	chmod 700 "${MOUNTPOINT}/usr/share/polkit-1/rules.d"
+
+# as gnome-terminal does not support utf language.
+cat > ${MOUNTPOINT}/etc/locale.conf << "EOF"
+LANG=en_US.UTF-8
+EOF
+
+# install info
+echo "Installing info files"
+	pushd ${MOUNTPOINT}/usr/share/info
+
+	for f in *
+	  do install-info $f dir 2>/dev/null
+	done
+popd
+
+
+# enable gdm-initial-setup
+if [ -f ${MOUNTPOINT}/etc/gdm/custom.conf ]; then
+	rm -r ${MOUNTPOINT}/etc/gdm/custom.conf
+fi
+
+
+
+# disable sddm autologin
+if [ -f ${MOUNTPOINT}/etc/sddm.conf ]; then	
+	sed -i "s/Session=lxqt.desktop/Session=/g" ${MOUNTPOINT}/etc/sddm.conf
+	sed -i "s/User=liveuser/User=/g" ${MOUNTPOINT}/etc/sddm.conf
+fi
+
+}
+
+make_initramfs(){
+	info_msg "$(gettext "Generating initramfs image")"	
+	chroot ${CHROOTDIR} depmod -a ${KERVER}
+	chroot ${CHROOTDIR} dracut '/boot/initramfs-linux.img' ${KERVER} --force
+}
+
+grub_bios(){
+	# extract the base drive from ${DRIVE}
+	local grub_drive="${DRIVE%?}"
+			
+	info_msg "$(gettext 'Installing Grub boot loader for BIOS')"	
+
+	# Install Grub for BIOS
+	chroot ${CHROOTDIR} /usr/bin/grub-install ${grub_drive}
+}
+
+grub_uefi(){
+	info_msg "$(gettext 'Installing Grub boot loader for UEFI')"	
+	sudo grub-install --target=x86_64-efi --efi-directory=${EFI_MOUNTPOINT} --boot-directory=${DATA_MOUNTPOINT}/boot  --recheck
+}
+
+install_grub(){
+	
+	sudo mkdir -p ${DATA_MOUNTPOINT}/boot/grub
+	
+	if [[ -d /sys/firmware/efi ]];then
+		grub_uefi
+	else 
+		grub_bios
+	fi
+	# os-prober takes too long time, so disable it still if fixed
+	sed -i "s/#GRUB_DISABLE_OS_PROBER/GRUB_DISABLE_OS_PROBER/g" ${MOUNTPOINT}/etc/default/grub
+		
+	echo "installing grub boot loader"  
+
+	chroot ${CHROOTDIR} /usr/bin/grub-mkconfig -o /boot/grub/grub.cfg
+
+	# enable os-prober
+	sed -i "s/GRUB_DISABLE_OS_PROBER/#GRUB_DISABLE_OS_PROBER/g" ${MOUNTPOINT}/etc/default/grub
+}
+
+format_volume
+mount_volume
+copy_files
+chroot_mount
+fstab_setup
+genrate_locale
+systemd_setup
+generate_cache
+add_user
+final_setting
+make_initramfs
+install_grub
+umount_volume
+
+echo "Avouch Linux installed successfully. You may now reboot your computer."  

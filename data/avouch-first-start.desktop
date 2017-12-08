@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=Avouch Live Start
+Icon=preferences-system
+Exec=/usr/bin/livestart &
+Terminal=false
+Type=Application
+Categories=System;
+NoDisplay=true
+
+Name[en_US]=avouch-first-start

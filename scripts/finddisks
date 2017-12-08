@@ -1,0 +1,22 @@
+#!/bin/bash
+
+disks=${1}
+
+# this script find all the partition and strip the out put as required
+
+#!/bin/bash
+# 1. populate the partitions with parted
+# 2. extract only first two lines with head
+# 3. combine first and second line with past and so on
+# 4. filter out Disk workdir
+# 5. filter out Model: word
+# 6. replace /dev with :/dev so that we can get three column in QT
+
+# make sure that previos file removed before writing new partitions.
+if [ -f "/tmp/disks.txt" ]; then
+	rm "/tmp/disks.txt"
+fi
+
+echo -e "$(parted -l | grep -E 'Model|dev' | paste -d " "  - - | sed 's/Disk//' | sed 's/Model://' | sed 's,/dev,:/dev,g')" 2>&1 >> "/tmp/disks.txt"
+
+#echo -e "$(fdisk -l | grep -E 'Disk' | sed '/label/d' | sed '/identifier/d' | sed 's/Disk//')" 2>&1 >> "/tmp/disks.txt"
