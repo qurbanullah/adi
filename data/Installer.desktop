@@ -1,0 +1,11 @@
+[Desktop Entry]
+Name=Avouch Linux Installer
+GenericName=Installer
+Comment=Install Avouch Linux
+Exec=/usr/bin/adi %u
+Icon=system-software-install
+Terminal=false
+Type=Application
+StartupNotify=true
+Categories=System;Installer;
+Name[en_US]=Installer

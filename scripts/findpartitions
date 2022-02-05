@@ -1,0 +1,32 @@
+#!/bin/bash
+
+# set umask to 022 so that the files created by root will be with 644 permission
+# and directory will be created with permission 750
+# our default mask in profile is 027 (moderate security)
+umask 022
+
+disks="${1}"
+
+# this script find all the partition and strip the out put as required
+
+# make sure that previos file removed before writing new partitions.
+if [ -f "/tmp/partitions.txt" ]; then
+    rm "/tmp/partitions.txt"
+fi
+
+# 1. populate the partitions with fdisk
+# 2. extract only lines by grep which starts with /dev
+# 3. delete boot flage * from the bootable partition by using sed
+# 4. delete the line containing Ext (extended partiion) by using sed
+# 5. remove any USB drive which is shown by LBA
+# 6. remove any loop device
+# 7. delete the blank spaces and and seperate each column with : by using tr command.
+# 8. filter out any swap partition filesysstem
+# 9. filter out any NTFS partition filesysstem
+
+total_partitions="$(fdisk -l ${disks} | grep ^/dev/ | sed 's/*//' | sed '/Ext/d' | sed '/LBA/d' | sed '/loop/d' | tr -s '[:blank:]' ':' | sed 's|Linux:swap:/:Solaris|swap|' | sed 's|HPFS/NTFS/exFAT|NTFS|')" >> "/tmp/partitions.txt"
+if [ -z "${total_partitions}" ]; then
+    echo -e "No:Partition:Found:Use:above:mentioned:options" >> "/tmp/partitions.txt"
+else
+    echo -e "${total_partitions}" >> "/tmp/partitions.txt"
+fi

@@ -1,0 +1,1009 @@
+#!/bin/bash
+
+# set umask to 022 so that the files created by root will be with 644 permission
+# and directory will be created with permission 750
+# our default mask in profile is 027 (moderate security)
+umask 022
+
+
+# exit when any command fails
+# set -e
+
+# keep track of the last executed command
+# trap 'last_command=$current_command; current_command=$BASH_COMMAND' DEBUG
+# echo an error message before exiting
+# trap 'echo "\"${last_command}\" command filed with exit code $?."' EXIT
+
+# Avouch Linux installer
+# if [ -f "/tmp/disk.conf" ]; then
+#     source "/tmp/disk.conf"
+# else
+# 	echo "No configuration file found"
+# 	exit 1
+# fi
+
+# if [ -f "/tmp/diskpartopt.conf" ]; then
+#     source "/tmp/diskpartopt.conf"
+# else
+# 	echo "No configuration file found"
+# 	#exit 0
+# fi
+
+if [ -f "/tmp/adi.conf" ]; then
+    source "/tmp/adi.conf"
+else
+	echo "No configuration file found"
+	exit 1
+fi
+
+PROGNAME=$(basename $0)
+#DRIVE="${1}"
+#USERNAME="${2}"
+#PASSWORD="${3}"
+#ROOTPASSWD="${4}"
+#HOSTNAME="${5}"
+#FULLNAME="${@:6}"
+
+FILESYSTEM="btrfs"
+MOUNTPOINT="/mnt"
+CHROOTDIR="/mnt"
+DATA_DRIVE="${DRIVE}"
+EFI_MOUNTPOINT="efi"
+DATA_MOUNTPOINT="${MOUNTPOINT}"
+ARCH="$(uname -m)"
+BASENAME="$(basename "${PWD}")"
+KERVER=$(uname -r)
+
+echo "Disk is    : ${DISK}"
+echo "Disk partiotion options are    : ${DISKPARTOPT}"
+echo "Drive is    : ${DRIVE}"
+echo "Username is : ${USERNAME}"
+echo "Password is : ${PASSWORD}"
+echo "Root Password is : ${ROOTPASSWD}"
+echo "Hostname is : ${HOSTNAME}"
+echo "Fullname is : ${FULLNAME}"
+
+### example ## order of argument is important
+# ./adiscript "<drive>" "<username>" "<user password>" "<root password>" "<host/computer name>" "<full name>"
+
+# ./adiscript "/dev/sda3" "avouch" "Avouch" "Avouch" "avouch-pc" "Qurban Ullah"
+
+
+### change to english locale!
+# export LANG="en_US"
+
+### SUBROUTINES ###
+
+########################################################################
+# check if messages are to be printed using color
+unset ALL_OFF BOLD BLUE GREEN RED YELLOW
+
+	if tput setaf 0 &>/dev/null; then
+		ALL_OFF="$(tput sgr0)"
+		BOLD="$(tput bold)"
+		BLUE="${BOLD}$(tput setaf 4)"
+		GREEN="${BOLD}$(tput setaf 2)"
+		RED="${BOLD}$(tput setaf 1)"
+		YELLOW="${BOLD}$(tput setaf 3)"
+	else
+		ALL_OFF="\e[0m"
+		BOLD="\e[1m"
+		BLUE="${BOLD}\e[34m"
+		GREEN="${BOLD}\e[32m"
+		RED="${BOLD}\e[31m"
+		YELLOW="${BOLD}\e[33m"
+	fi
+
+readonly ALL_OFF BOLD BLUE GREEN RED YELLOW
+
+### SUBROUTINES ###
+plain() {
+	local mesg=$1; shift
+	printf "${BOLD} ${mesg}${ALL_OFF}\n" "$@" >&2
+}
+
+success() {
+	local mesg=$1; shift
+	printf "${GREEN} $(gettext "Success:")${ALL_OFF}${BOLD} ${mesg}${ALL_OFF}\n" "$@" >&2
+}
+
+message() {
+	local mesg=$1; shift
+	printf "${BLUE} $(gettext "Message:")${ALL_OFF}${BOLD} ${mesg}${ALL_OFF}\n" "$@" >&2
+}
+
+warning() {
+	local mesg=$1; shift
+	printf "${YELLOW} $(gettext "Warning:")${ALL_OFF}${BOLD} ${mesg}${ALL_OFF}\n" "$@" >&2
+}
+
+error() {
+	local mesg=$1; shift
+	printf "${RED} $(gettext "Error:")${ALL_OFF}${BOLD} ${mesg}${ALL_OFF}\n" "$@" >&2
+}
+
+### check for root
+check_root () {
+	if ! [[ x${UID} -eq x0 ]]; then 
+		echo "ERROR: Please run installer as super user!"
+		exit 1
+	fi
+}
+
+die(){	
+	echo "${PROGNAME}: ${1:-"Unknown Error"}" 1>&2
+	exit 1
+}
+
+find_disk() {
+	# 1. populate the partitions with parted
+	# 2. extract only first two lines with head
+	# 3. combine first and second line with past and so on
+	# 4. filter out Disk workdir
+	# 5. filter out Model: word
+	# 6. replace /dev with :/dev so that we can get three column in QT
+
+	# make sure that previos file removed before writing new partitions.
+	if [ -f "/tmp/disks.txt" ]; then
+		rm "/tmp/disks.txt"
+	fi
+
+	echo -e "$(lsblk -Sno NAME,SIZE,MODEL | sed 's,^sd,/dev/sd,g' | sed -e "s/ /:/g" | sed -e "s/::/:/g")" 2>&1 >> "/tmp/disks.txt"
+}
+
+# this function find all the partition and strip the out put as required
+find_partitions() {
+	# make sure that previos file removed before writing new partitions.
+	if [ -f "/tmp/partitions.txt" ]; then
+		rm "/tmp/partitions.txt"
+	fi
+
+	# 1. populate the partitions with fdisk
+	# 2. extract only lines by grep which starts with /dev
+	# 3. delete boot flage * from the bootable partition by using sed
+	# 4. delete the line containing Ext (extended partiion) by using sed
+	# 5. remove any USB drive which is shown by LBA
+	# 6. remove any loop device
+	# 7. delete the blank spaces and and seperate each column with : by using tr command.
+	# 8. filter out any swap partition filesysstem
+	# 9. filter out any NTFS partition filesysstem
+
+	echo -e "$(fdisk -l ${disks} | grep ^/dev/ | sed 's/*//' | sed '/Ext/d' | sed '/LBA/d' | sed '/loop/d' | tr -s '[:blank:]' ':' | sed 's|Linux:swap:/:Solaris|swap|' | sed 's|HPFS/NTFS/exFAT|NTFS|')" >> "/tmp/partitions.txt"
+}
+
+getTotalRam() {
+	# 1. Get the memory information with cat comman
+	# 2. grep line with MemTotal
+	# 3. filter out all except digits with sed
+	# 4. Conver Output in MB by deviding the total ram by 1024
+	# 5. Rounding of data
+	echo "$(cat /proc/meminfo | grep MemTotal | sed 's/[^0-9]*//g' | awk '{$1=$1/1024; printf("%.f\n",$1);}')"
+}
+
+# get_uuid()
+# converts /dev/[hs]d?[0-9] devices to UUIDs
+#
+# parameters: device file
+# outputs:    UUID on success
+#             nothing on failure
+# returns:    nothing
+get_uuid()
+{
+    if [ "${1%%/[hs]d?[0-9]}" != "${1}" ]; then
+        echo "$(blkid -s UUID -o value ${1})"
+    fi
+}
+
+get_fstype() {
+    if [ "${1%%/[hs]d?[0-9]}" != "${1}" ]; then
+        echo "$(blkid -s TYPE -o value ${1})"
+    fi
+}
+
+check_if_gpt() {
+	# find the EFI system drive of the select hard disk, 
+	# grep EFI system drive string, starting with /dev and end at :.
+	echo "$(sudo gdisk -l ${DISK} | grep 'GPT: present')"
+}
+
+get_efi_drive() {
+	# find the EFI system drive of the select hard disk, 
+	# grep EFI system drive string, starting with /dev and end at :.
+	# gdisk write the drive number after 3 spaces at 4th position in a line
+	# so cut all the remaining after 4th position
+	echo "$(gdisk -l ${DISK} | grep 'EF00' | cut -d' ' -f4)"
+}
+
+#get_efi_drive() {
+	# find the EFI system drive of the select hard disk, 
+	# grep EFI system drive string, starting with /dev and end at :.
+	#echo "$(fdisk -l ${DRIVE%?} | grep -n 'EFI' | grep -o '/dev[^ ]*')"
+#}
+
+get_swapdrive() {
+	# blkid and find the swap drive , 
+	# grep swap drive string starting with /dev and end at :.
+	echo "$(blkid | grep -n 'swap' | grep -o '/dev[^:]*')"
+}
+
+format_volume () {	
+	# First unmount the partition
+
+	if grep -qs "${1}" /proc/mounts; then
+		message "Filesystem is mounted."
+		umount -l "${1}" || exit 1	
+	else
+		message "Filesystem is not mounted."
+	fi
+		
+	# formate partition
+	echo "Installing ${FILESYSTEM} filesystem on ${1}"
+	# force to formate with btrfs
+	echo y | mkfs.${FILESYSTEM} -fq "${1}" || exit 1
+}
+
+format_efi_drive() {	
+	# First unmount the partition
+	local efi_drive="${1}"
+	if grep -qs ${efi_drive} /proc/mounts; then
+		message "EFI drive is mounted."
+		message"Unmounting the EFI drive."
+		#umount -l ${efi_drive} || exit 1
+		umount -l ${efi_drive}
+		echo y | mkfs.vfat "${efi_drive}"  || exit 1
+	else
+		message "Filesystem is not mounted."
+		# formate partition
+		echo "Installing vfat filesystem on EFI drive : ${efi_drive}"
+		echo y | mkfs.vfat "${efi_drive}"  || exit 1	
+	fi
+}
+
+mount_efi_drive(){
+	# check if the CD is booted in EFI environment
+	if [[ -d /sys/firmware/efi ]]; then
+		# check if the partition table is GPT or not
+		if [ -z "$(check_if_gpt)" ]; then
+			echo  "The drive does not have GPT partition table. installaton could not be continued"
+			exit 1
+		else
+			# the function get_efi_drive provids only the number of the efi drive
+			local efi_drive_num="$(get_efi_drive)"
+			local efi_drive=${DISK}${efi_drive_num}
+			# check that the $efi_drive_num is not empty and is a number
+			if [ ! -z "${efi_drive_num##*[!0-9]*}" ]; then
+				echo "EFI drive is : ${efi_drive}"
+				# Format the EFI dive first
+				# Append the Disk with the efi drive numbuer
+				format_efi_drive ${efi_drive} 
+
+				# check if the EFI mount point exist or not
+				if [ ! -d "${MOUNTPOINT}/efi" ]; then
+  					# If directory not exits, creat new one
+					mkdir "${MOUNTPOINT}/efi"
+				fi
+				# mount uefi system drive				
+				mount -t vfat ${efi_drive} "${MOUNTPOINT}/efi"
+				message "EFI drive mounted successfully"
+				
+			else
+				echo "EFI system partition not found. You need to create the ESP first"
+				exit 1
+			fi
+		fi
+	fi	
+}
+
+mount_volume()  {
+
+	# format partition
+	local fstype="$(get_fstype ${1})"	
+
+	# check if the mount point exist or not
+	if [ ! -d "${MOUNTPOINT}" ]; then
+  		# If directory not exits, creat new one
+		mkdir "${MOUNTPOINT}"
+	fi
+
+	# mount the drive
+	mount -t ${fstype} "${1}" ${MOUNTPOINT} || exit 1
+
+	# cd to mountpoint
+	cd "$MOUNTPOINT"
+	if [ -d "$MOUNTPOINT/var/avouch/log" ]; then
+		rm -r "$MOUNTPOINT/var/avouch/log"
+	else
+		mkdir -p "$MOUNTPOINT/var/avouch/log"
+		touch "$MOUNTPOINT/var/avouch/log/avouch-installl.log"
+
+	fi
+}
+
+create_one_partitions_of_whole_disk() {
+	echo "Disk to be partitioned is : ${1}"
+	if [[ -d /sys/firmware/efi ]]; then		
+		echo "Deleting all partions..."
+		wipefs -a "${1}"
+		sleep 1;
+		echo "EFI firmaware detected! Creating GPT layout..."
+		echo "Creating one partions of whole disk..."
+		sleep 1
+		parted -s --align optimal ${1} \
+			mklabel gpt \
+			mkpart primary 1 128 \
+			mkpart primary 128 100% \
+			set 1 boot
+
+		# slepp for one secon, so that all partions are populated
+		sleep 2;
+		# formate partiton 2 in EFI environment
+		format_volume "${1}2"
+
+		# slepp for one secon, so that all partions are populated
+		sleep 1;
+		# mount partion
+		mount_volume "${1}2"
+
+		# mount EFI drive
+		mount_efi_drive "${1}1"
+	else
+		echo "Deleting all partions..."
+		wipefs -a ${1}
+		sleep 1;
+		message "EFI firmaware not detected! Creating msdos partition layout..."
+		message "Creating one partions of whole disk..."
+		echo "Creating partitions..."
+		# first partion will be boot partition
+		# second partition will be root partition
+		parted -s --align optimal ${1} \
+			mklabel msdos \
+			mkpart primary 1 100% \
+			set 1 boot
+		
+		# slepp for one secon, so that all partions are populated
+		sleep 2;
+		# formate partion 1 in MSDOS environment
+		format_volume "${1}1"
+
+		# slepp for one secon, so that all partions are populated
+		sleep 1;
+		# mount root partion
+		mount_volume "${1}1"
+	fi
+}
+
+create_two_partitions_of_equal_size() {
+	echo "Disk to be partitioned is : ${1}"
+	if [[ -d /sys/firmware/efi ]]; then		
+		echo "Deleting all partions..."
+		wipefs -a ${1}
+		sleep 1;
+		message "EFI firmaware detected! Creating GPT partition layout..."
+		message "Creating two partions of equal size..."
+		echo "Creating partitions."		
+		parted -s --align optimal ${1} \
+			mklabel gpt \
+			mkpart primary 1 128 \
+			mkpart primary 128 50% \
+			mkpart primary 50% 100% \
+			set 1 boot
+
+		# slepp for one secon, so that all partions are populated
+		sleep 2;
+		# formate partiton 2 in EFI environment
+		format_volume "${1}2"
+		# slepp for one secon, so that all partions are populated
+		sleep 2;
+		# formate partiton 3 (data partition) in EFI environment
+		format_volume "${1}3"
+
+		# slepp for one secon, so that all partions are populated
+		sleep 1;
+		# mount root partion
+		mount_volume "${1}2"
+
+		# mount EFI drive
+		mount_efi_drive "${1}1"
+	else
+		echo "Deleting all partions..."
+		wipefs -a ${1}
+		sleep 1;
+		echo "EFI firmaware not detected! Creating msdos partition layout..."
+		echo "Creating three partions of equal size..."
+		# first partion will be boot partition
+		# second partition will be root partition
+		# third partion will be data partition
+		parted -s --align optimal ${1} \
+			mklabel msdos \
+			mkpart primary 1 50%  \
+			mkpart primary 50% 100% \
+			set 1 boot
+
+		# sleep for one second, so that all partions are populated
+		sleep 2;
+		# formate partiton 2 (root partition) in EFI environment
+		format_volume "${1}1"
+		# sleep for one second, so that all partions are populated
+		sleep 2;
+		# formate partiton 2 (data partition) in EFI environment
+		format_volume "${1}2"
+		# sleep for one secon, so that all partions are populated
+		sleep 1;
+		# mount root partion
+		mount_volume "${1}1"
+	fi
+}
+
+##
+## This function create the swapfile equal to the system RAM
+##
+createSwapFile() {
+	# swap file size would be one forth of total RAM.
+	local swap_file_size="$(getTotalRam | awk '{$1=$1/4; printf("%.f\n",$1);}')"
+	# with fallocate and tuncate produces error : swapon: swapfile has holes.
+	# fallocate -l "${swap_file_size}"M ${MOUNTPOINT}/.swap
+	dd if=/dev/zero of=${MOUNTPOINT}/.swap bs=1M count="${swap_file_size}"
+	# Only the root user should be able to write and read the swap file.
+	# Set the correct permissions by typing
+	chmod 600 ${MOUNTPOINT}/.swap
+	# Use the mkswap utility to set up a Linux swap area on the file
+	mkswap -L swap ${MOUNTPOINT}/.swap
+}
+
+chroot_mount(){
+	[ -e "${MOUNTPOINT}/sys" ] || mkdir "${MOUNTPOINT}/sys"
+	[ -e "${MOUNTPOINT}/proc" ] || mkdir "${MOUNTPOINT}/proc"
+	[ -e "${MOUNTPOINT}/dev" ] || mkdir "${MOUNTPOINT}/dev"
+	mount -t sysfs sysfs "${MOUNTPOINT}/sys"
+	mount -t proc proc "${MOUNTPOINT}/proc"
+	mount -o bind /dev "${MOUNTPOINT}/dev"
+
+	if [[ -d /sys/firmware/efi ]];then
+		message "Mounting efivars"
+		if [ ! -d "${MOUNTPOINT}/sys/firmware/efi/efivars" ]; then
+			# If directory not exits, creat new one
+			mkdir -p "${MOUNTPOINT}/sys/firmware/efi/efivars"
+		fi
+		
+		mount -t efivarfs efivarfs ${MOUNTPOINT}/sys/firmware/efi/efivars
+		#rm ${MOUNTPOINT}/sys/firmware/efi/efivars/dump-*
+	fi
+}
+
+# umount_volume()
+# unmount the mount point and slected partition
+#
+umount_volume(){
+	# change directory from mountpoint
+	cd /
+	umount ${MOUNTPOINT}/sys/firmware/efi/efivars
+	umount $MOUNTPOINT/proc
+	umount $MOUNTPOINT/sys
+	umount $MOUNTPOINT/dev
+	
+	# unmount the drive
+	umount -l ${MOUNTPOINT}
+}
+
+### check packages install files
+copy_files () {
+
+	echo "Copying files..."
+	### copy the hard drive files to the mounted drive
+	rsync -ar --one-file-system \
+	--exclude=/proc/* \
+	--exclude=/dev/* \
+	--exclude=/sys/* \
+	--exclude=/tmp/* \
+	--exclude=/home/* \
+	--exclude=/root/* \
+	--exclude=/lost+found \
+	--exclude=/build/ \
+	--exclude=/run/media/liveuser/ \
+	--exclude=/var/mail/* \
+	--exclude=/var/tmp/* \
+	--exclude=/var/log/journal/ \
+	--exclude=/etc/machine-id \
+	--exclude=/etc/fstab \
+	--exclude=/etc/hosts \
+	--exclude=/etc/timezone \
+	--exclude=/etc/localtime \
+	--exclude=/etc/X11/xorg.conf* \
+	--exclude=/etc/gdm/custom.conf \
+	--exclude=/etc/group \
+	--exclude=/etc/group- \
+	--exclude=/etc/gshadow \
+	--exclude=/etc/gshadow- \
+	--exclude=/etc/passwd \
+	--exclude=/etc/passwd- \
+	--exclude=/etc/shadow \
+	--exclude=/etc/gshadow- \
+	--exclude=/etc/systemd/network/* \
+	--exclude=/etc/systemd/system/* \
+	--exclude=/etc/systemd/user/* \
+	--exclude=/usr/share/selinux/refpolicy/*.pp \
+	--exclude=${MOUNTPOINT} / ${MOUNTPOINT}
+
+}
+
+fstab_setup(){
+
+	#drive_uuid=( $( echo $(blkid -s UUID -o value ${DRIVE})))
+	local drive_uuid="$(get_uuid ${1})"
+	local root_drive="UUID=${drive_uuid}"
+	local fstype="$(get_fstype ${1})"
+	local swap_drive="$(get_swapdrive)"
+
+	echo "Root partition uuid is : ${root_drive}"
+	
+
+	echo "${root_drive}   /   ${fstype}   defaults   0   1" >> "${MOUNTPOINT}/etc/fstab"
+	if [ -f ${MOUNTPOINT}/.swap ]; then
+		echo "/.swap  swap   swap   defaults   0    0" >> "${MOUNTPOINT}/etc/fstab"
+	fi
+
+	if [ ! -z "${swap_drive}" ]; then
+		for sdrive in ${swap_drive[@]}; do
+			echo "Swap partition is : ${sdrive}"
+			echo "${sdrive}  none   swap   defaults   0    0" >> "${MOUNTPOINT}/etc/fstab"
+		done
+	else 
+		echo "No swap drive found"
+	fi
+
+}
+
+genrate_locale(){
+
+	### change to english locale!
+	#chroot ${CHROOTDIR} export LANG="en_US"
+
+	# generating locales
+	message "Generating locales"
+	sed -i 's/#ar_EG.UTF-8/ar_EG.UTF-8/g' ${MOUNTPOINT}/etc/locale.gen
+	sed -i 's/#de_DE.UTF-8/de_DE.UTF-8/g' ${MOUNTPOINT}/etc/locale.gen
+	sed -i 's/#en_GB.UTF-8/en_GB.UTF-8/g' ${MOUNTPOINT}/etc/locale.gen
+	sed -i 's/#en_US.UTF-8/en_US.UTF-8/g' ${MOUNTPOINT}/etc/locale.gen
+	sed -i 's/#es_ES.UTF-8/es_ES.UTF-8/g' ${MOUNTPOINT}/etc/locale.gen
+	sed -i 's/#fr_FR.UTF-8/fr_FR.UTF-8/g' ${MOUNTPOINT}/etc/locale.gen
+	sed -i 's/#ja_JP.UTF-8/ja_JP.UTF-8/g' ${MOUNTPOINT}/etc/locale.gen
+	sed -i 's/#ru_RU.UTF-8/ru_RU.UTF-8/g' ${MOUNTPOINT}/etc/locale.gen
+	sed -i 's/#zh_CN.UTF-8/zh_CN.UTF-8/g' ${MOUNTPOINT}/etc/locale.gen
+
+	chroot ${CHROOTDIR} /usr/bin/locale-gen
+
+	rm ${MOUNTPOINT}/etc/resolv.conf 
+	rm ${MOUNTPOINT}/etc/hostname
+	echo ${HOSTNAME} > ${MOUNTPOINT}/etc/hostname
+	echo "127.0.0.1    localhost.localdomain    ${HOSTNAME}" >> ${MOUNTPOINT}/etc/hosts
+	#chroot ${CHROOTDIR} hostnamectl set-hostname "${HOSTNAME}"
+
+	# ca-certificates
+	echo "Updating ca-certificates..."
+	#export LC_ALL=C
+	chroot ${CHROOTDIR} /usr/bin/update-ca-trust
+	#chroot ${CHROOTDIR} /usr/bin/setup-nsssysinit.sh on
+	#chroot ${CHROOTDIR} /usr/bin/ca-legacy install
+	chroot ${CHROOTDIR} unbound-anchor -a "/etc/unbound/root.key"
+	echo "ca-certificates updated"
+	
+}
+
+systemd_setup(){
+
+	echo "Generating systemd machine id..."
+	chroot ${CHROOTDIR} systemd-machine-id-setup
+
+	# creat dbus link to machine-id, so that both dbus and systemd uses same machine-id
+	[ ! -d "${MOUNTPOINT}/var/lib/dbus" ] || mkdir -p "${MOUNTPOINT}/var/lib/dbus"
+	chroot ${CHROOTDIR} ln -sf /etc/machine-id "$pkgdir"/var/lib/dbus
+
+	message "creating systemd-sysuser..."
+	chroot ${CHROOTDIR} systemd-sysusers
+	
+	message "creating systemd-tmpfiles..."
+	chroot ${CHROOTDIR} systemd-tmpfiles --create
+
+	echo "updating journalctl cataloge..."
+	chroot ${CHROOTDIR} /usr/lib/systemd/systemd-random-seed save
+	chroot ${CHROOTDIR} journalctl --update-catalog
+
+	# Apply ACL to the journal directory
+	chroot ${CHROOTDIR} setfacl -Rnm g:wheel:rx,d:g:wheel:rx,g:adm:rx,d:g:adm:rx /var/log/journal/
+
+	# enable services by systemctl preset
+	echo "Generating systemd preset..."
+	chroot ${CHROOTDIR} systemctl preset \
+			remote-fs.target \
+			getty@.service \
+			serial-getty@.service \
+			console-getty.service \
+			debug-shell.service \
+			systemd-timesyncd.service \
+			systemd-networkd.service \
+			systemd-networkd-wait-online.service \
+			systemd-resolved.service \
+			lvm2-monitor.service \
+			avahi-daemon.service \
+			ModemManager.service \
+			NetworkManager.service \
+			restorecond.service
+	>/dev/null 2>&1 || :
+	
+	# enable one of the available display manger service.
+    if [ -f ${MOUNTPOINT}/usr/lib/systemd/system/gdm.service ]; then
+        chroot ${CHROOTDIR} systemctl enable gdm.service			        
+		chroot ${CHROOTDIR} setcap 'cap_sys_nice+ep' /usr/bin/mutter	
+		chroot ${CHROOTDIR} setcap 'cap_sys_nice+ep' /usr/bin/gnome-shell
+		chroot ${CHROOTDIR} setcap 'cap_net_bind_service=+ep' /usr/lib/gvfsd-nfs
+		chroot ${CHROOTDIR} setcap 'cap_ipc_lock=ep' /usr/bin/gnome-keyring-daemon
+    elif [ -f ${MOUNTPOINT}/usr/lib/systemd/system/sddm.service ]; then
+        chroot ${CHROOTDIR} systemctl enable sddm.service
+		chroot ${CHROOTDIR} setcap 'cap_net_bind_service=+ep' /usr/lib/gvfsd-nfs
+        chroot ${CHROOTDIR} setcap 'cap_ipc_lock=ep' /usr/bin/gnome-keyring-daemon
+    elif [ -f ${MOUNTPOINT}/usr/lib/systemd/system/lxdm.service ]; then
+        chroot ${CHROOTDIR} systemctl enable lxdm.service
+		chroot ${CHROOTDIR} setcap 'cap_net_bind_service=+ep' /usr/lib/gvfsd-nfs
+        chroot ${CHROOTDIR} setcap 'cap_ipc_lock=ep' /usr/bin/gnome-keyring-daemon
+    fi
+
+	
+	# Enable xdg-user-dirs-update by default
+	chroot ${CHROOTDIR} systemctl --global enable xdg-user-dirs-update.service
+	chroot ${CHROOTDIR} systemctl --global enable pulseaudio.socket
+
+	# Enable socket by default
+	systemctl --global enable p11-kit-server.socket
+
+	# update udev dtabase
+	chroot ${CHROOTDIR} udevadm hwdb --update
+
+	# enable ldconfig service
+	mv "${MOUNTPOINT}/usr/lib/systemd/system/sysinit.target.wants/ldconfig.disabled" \
+		"${MOUNTPOINT}/usr/lib/systemd/system/sysinit.target.wants/ldconfig.service"
+}
+
+add_user(){
+
+	# first remove liveuser
+	#echo "Deleting liveuser..."
+	#chroot ${CHROOTDIR} userdel -fr liveuser
+
+	# remove live user directory if still exists
+	#if [ -d ${MOUNTPOINT}/home/liveuser ]; then
+	#	rm -r ${MOUNTPOINT}/home/liveuser
+	#fi
+
+
+	# Can't use sysusers as the greeter session cannot launch with an expired 'gdm' account
+	# systemd-sysusers now creates expired accounts since version 243, 
+	# which broke the greeter on new installations.
+	# if [ -f ${MOUNTPOINT}/usr/lib/systemd/system/gdm.service ]; then
+	# 	chroot ${CHROOTDIR} groupadd -r -g 80 gdm
+    # 	chroot ${CHROOTDIR} useradd -r -c "Gnome Display Manager" -u 80 -g gdm -d /var/lib/gdm -s /sbin/nologin gdm
+    # 	chroot ${CHROOTDIR} passwd -ql gdm
+	# elif [ -f ${MOUNTPOINT}/usr/lib/systemd/system/sddm.service ]; then
+	# 	chroot ${CHROOTDIR} groupadd -r -g 82 sddm
+	# 	chroot ${CHROOTDIR} useradd -r -c 'Simple Desktop Display Manager' -u 82 -g sddm -d /var/lib/sddm -s /sbin/nologin sddm
+	# 	chroot ${CHROOTDIR} passwd -ql sddm
+	# 	chroot ${CHROOTDIR} mkdir -p /var/lib/sddm
+	# 	chroot ${CHROOTDIR} chown -R sddm:sddm /var/lib/sddm
+	# fi
+
+    message "$(gettext "Adding user ${USERNAME}")"
+	chroot ${CHROOTDIR} useradd -c "${FULLNAME}" -m "${USERNAME}"
+	chroot ${CHROOTDIR} usermod -a -G wheel "${USERNAME}"
+
+	chroot ${CHROOTDIR} passwd -d "${USERNAME}" > /dev/null
+	$(echo -e "${PASSWORD}\n${PASSWORD}" | chroot ${CHROOTDIR} passwd "${USERNAME}")
+	echo "Password for ${USERNAME} is set to ${PASSWORD}"
+
+	chroot ${CHROOTDIR} passwd -d "root" > /dev/null
+	$(echo -e "${ROOTPASSWD}\n${ROOTPASSWD}" | chroot ${CHROOTDIR} passwd "root")
+	echo "Password for root is set to ${ROOTPASSWD}"
+
+	# copy configuration files
+	#cp -r /home/liveuser/* ${CHROOTDIR}/home/${USERNAME}/
+
+	# shadow enabling
+	message "updating shadow passwords"
+	chroot ${CHROOTDIR} touch /etc/gshadow-
+	chroot ${CHROOTDIR} touch /etc/passwd-
+	chroot ${CHROOTDIR} touch /etc/shadow-
+	chroot ${CHROOTDIR} grpck
+	chroot ${CHROOTDIR} pwconv
+	chroot ${CHROOTDIR} grpconv
+}
+
+generate_cache(){
+
+	echo "Configuring system..."
+	# message "$(gettext 'Configuring system...')"
+	# echo "ldconfig..."
+    # message "$(gettext 'Generating ldconfig cache...')"
+	chroot ${CHROOTDIR} /usr/bin/ldconfig
+
+	# fonts cache
+    # message "$(gettext 'Generating fonts cache...')"
+	chroot ${CHROOTDIR} fc-cache -f
+	chroot ${CHROOTDIR} mkfontdir /usr/share/fonts/*
+
+	# gdk-pixbuf update cache
+	# echo "Updating gdk-pixbuf cache..."
+	chroot ${CHROOTDIR} /usr/bin/gdk-pixbuf-query-loaders --update-cache
+
+	# gtk cache
+	# echo "Updating gtk2 cache..."
+	chroot ${CHROOTDIR} /usr/bin/gtk-query-immodules-2.0 --update-cache
+
+	# gtk3 cache
+	# echo "Updating gtk3 cache..."
+	chroot ${CHROOTDIR} /usr/bin/gtk-query-immodules-3.0 --update-cache
+
+	# glib compile schema
+	# echo "Compiling glib schemas"
+	chroot ${CHROOTDIR} /usr/bin/glib-compile-schemas /usr/share/glib-2.0/schemas
+
+	# icon cache
+	# echo "Updating icone cache..."
+	chroot ${CHROOTDIR} /usr/bin/gtk-update-icon-cache -q -t -f /usr/share/icons/hicolor
+	chroot ${CHROOTDIR} /usr/bin/gtk-update-icon-cache -q -t -f /usr/share/icons/locolor
+	
+	# update the icon cache based on the desktop environment
+	if [ -f ${MOUNTPOINT}/usr/lib/systemd/system/gdm.service ]; then
+		chroot ${CHROOTDIR} /usr/bin/gtk-update-icon-cache -q -t -f /usr/share/icons/Adwaita
+		chroot ${CHROOTDIR} /usr/bin/gtk-update-icon-cache -q -t -f /usr/share/icons/breeze-dark
+		chroot ${CHROOTDIR} dconf update
+	elif [ -f ${MOUNTPOINT}/usr/lib/systemd/system/sddm.service ]; then
+		chroot ${CHROOTDIR} /usr/bin/gtk-update-icon-cache -q -t -f /usr/share/icons/breeze
+		chroot ${CHROOTDIR} /usr/bin/gtk-update-icon-cache -q -t -f /usr/share/icons/breeze-dark
+	fi
+
+	chroot ${CHROOTDIR} /usr/bin/xdg-icon-resource forceupdate --theme hicolor
+
+	# vlc cache-gen
+	# echo "Generating vlc cache..."
+	chroot ${CHROOTDIR} /usr/lib/vlc/vlc-cache-gen /usr/lib/vlc/plugins
+
+	# mime database
+	# echo "Updating mime-database..."
+	chroot ${CHROOTDIR} /usr/bin/update-mime-database /usr/share/mime
+
+	# desktop database
+	chroot ${CHROOTDIR} /usr/bin/update-desktop-database -q
+
+}
+
+final_setting(){
+
+	# enable first start
+	sed -i "s/livestart/firststart/g" "${MOUNTPOINT}/etc/xdg/autostart/avouch-first-start.desktop"
+
+	# make journalctl log dir
+	mkdir -p ${MOUNTPOINT}/var/log/journal/remote
+
+	# fix for polkit until all packagesare updates for polkity group 70
+	chown 70:0 "${MOUNTPOINT}/etc/polkit-1/rules.d"
+	chown 70:0 "${MOUNTPOINT}/usr/share/polkit-1/rules.d"
+
+	chmod 700 "${MOUNTPOINT}/etc/polkit-1/rules.d"
+	chmod 700 "${MOUNTPOINT}/usr/share/polkit-1/rules.d"
+
+	#Lynis – Warning: Incorrect permissions for file /root/.ssh [test:FILE-7524]
+	chmod 700 "${MOUNTPOINT}/root/.ssh"
+
+# as gnome-terminal does not support utf language.
+cat > ${MOUNTPOINT}/etc/locale.conf << "EOF"
+LANG=en_US.UTF-8
+EOF
+
+# install info
+# echo "Installing info files"
+	pushd ${MOUNTPOINT}/usr/share/info
+
+	for f in *
+	  do install-info $f dir 2>/dev/null
+	done
+popd
+
+
+# enable gdm-initial-setup
+if [ -f ${MOUNTPOINT}/etc/gdm/custom.conf ]; then
+	rm -r ${MOUNTPOINT}/etc/gdm/custom.conf
+fi
+
+# disable sddm autologin
+if [ -f ${MOUNTPOINT}/etc/sddm.conf ]; then	
+	sed -i "s/Session=lxqt.desktop/Session=/g" ${MOUNTPOINT}/etc/sddm.conf
+	sed -i "s/User=liveuser/User=/g" ${MOUNTPOINT}/etc/sddm.conf
+fi
+
+	# enable SELinux
+	if [ -e "${MOUNTPOINT}/etc/selinux/config" ]
+	then
+		message ">>> In order to use this policy, set SELINUXTYPE=refpolicy in /etc/selinux/config."
+	else
+		chroot ${CHROOTDIR} ln -sf config.refpolicy "etc/selinux/config"
+	fi
+
+	message ">>> Building refpolicy policy store. Please wait..."
+	chroot ${CHROOTDIR}  semodule -s refpolicy -i /usr/share/selinux/refpolicy/*.pp
+	message ">>> Relabeling the filesystem..."
+	chroot ${CHROOTDIR} restorecon -rF /
+	message ">>> This can be done with: /usr/bin/restorecon -rF /"
+
+	message "Fixing the ownership for usr ${USERNAME} "
+	# incase of failure
+	#chroot ${CHROOTDIR} touch /root/.Xauthority
+	#chroot ${CHROOTDIR} touch /home/${USERNAME}/.Xauthority
+	#chroot ${CHROOTDIR} chown "${USERNAME}:${USERNAME}"  /home/${USERNAME}/.Xauthority
+
+	chroot ${CHROOTDIR} chmod 755 "home/${USERNAME}"
+	#chroot ${CHROOTDIR} chown "${USERNAME}:${USERNAME}" /home/"${USERNAME}"
+	#chroot ${CHROOTDIR} chown -Rf "${USERNAME}:${USERNAME}" /home/${USERNAME}/*
+
+	# workaround for restorecond warning
+	chroot ${CHROOTDIR} mkdir -p /root/.ssh
+
+}
+
+make_initramfs(){
+	message "$(gettext "Generating initramfs image...")"
+	echo "Generating initramfs image..."
+	chroot ${CHROOTDIR} depmod -a ${KERVER}
+
+	# systemd expects to find the kernel here to allow hibernation
+    # https://github.com/systemd/systemd/commit/edda44605f06a41fb86b7ab8128dcf99161d2344
+	# so we create initramfs in same location so that initramfs and vulinuz remain in same 
+	# module directory and then create the symlink of both to the /boot directory for grub
+	chroot ${CHROOTDIR} dracut "/usr/lib/modules/${KERVER}/initramfs.img" ${KERVER} --force --quiet
+
+	chroot ${CHROOTDIR} ln -sf "../usr/lib/modules/${KERVER}/initramfs.img" "boot/initramfs-${KERVER}.img"
+	chroot ${CHROOTDIR} ln -sf "../usr/lib/modules/${KERVER}/vmlinuz" "boot/vmlinuz-${KERVER}"
+
+}
+
+grub_bios(){
+	# extract the base drive from ${DRIVE}
+	local grub_drive="${DISK}"
+			
+	message "$(gettext 'Installing Grub boot loader for BIOS...')"
+	echo "Installing Grub boot loader for BIOS..."
+
+	if [[ ! -d "${MOUNTPOINT}/boot/grub" ]];then
+		mkdir -p "${MOUNTPOINT}/boot/grub"
+	fi
+	# Install Grub for BIOS
+	chroot ${CHROOTDIR} grub-install --themes=avouch ${grub_drive}
+}
+
+grub_uefi(){
+	# mount efi partition first	
+	message "$(gettext 'Installing Grub boot loader for UEFI...')"
+	echo "Installing Grub boot loader for UEFI..."	
+	if [[ ! -d "${MOUNTPOINT}/efi/boot/grub" ]];then
+		mkdir -p "${MOUNTPOINT}/efi/boot/grub"
+	fi
+
+	chroot ${CHROOTDIR} grub-install --themes=avouch --target=x86_64-efi --efi-directory="efi" --boot-directory="efi/boot"  --recheck || die "Unable to install grub boot loader for UEFI"
+}
+
+install_grub(){
+	
+	sudo mkdir -p ${DATA_MOUNTPOINT}/boot/grub
+	
+	if [[ -d /sys/firmware/efi ]];then
+		grub_uefi
+		# os-prober takes too long time, so disable it still it fixed
+		# sed -i "s/#GRUB_DISABLE_OS_PROBER/GRUB_DISABLE_OS_PROBER/g" ${MOUNTPOINT}/etc/default/grub
+			
+		message "$(gettext 'Generating Grub configuration file')"
+		echo "Generating Grub configuration file"
+		chroot ${CHROOTDIR} /usr/bin/grub-mkconfig -o efi/boot/grub/grub.cfg
+		# enable os-prober
+		# sed -i "s/GRUB_DISABLE_OS_PROBER/#GRUB_DISABLE_OS_PROBER/g" ${MOUNTPOINT}/etc/default/grub
+
+		echo "Avouch Linux installed successfully. You may now reboot your computer." 
+	else 
+		grub_bios
+		# os-prober takes too long time, so disable it still it fixed
+		# sed -i "s/#GRUB_DISABLE_OS_PROBER/GRUB_DISABLE_OS_PROBER/g" ${MOUNTPOINT}/etc/default/grub
+			
+		message "$(gettext 'Generating Grub configuration file')"
+		echo "Generating Grub configuration file..."
+		chroot ${CHROOTDIR} grub-mkconfig -o boot/grub/grub.cfg
+		# enable os-prober
+		# sed -i "s/GRUB_DISABLE_OS_PROBER/#GRUB_DISABLE_OS_PROBER/g" ${MOUNTPOINT}/etc/default/grub
+
+		echo "Avouch Linux installed successfully. You may now reboot your computer." 
+	fi
+	 
+
+}
+
+main() {
+	check_root
+	if [ -z ${DISKPARTOPT} ];then
+		echo "No option selected for disk partition"
+		if [ ! -z ${DISKPARTOPT} ];then
+			format_volume "${DRIVE}"
+			# sleep for one second, so that all partions are populated
+			sleep 1;
+			# mount partion
+			mount_volume "${DRIVE}"
+			if [[ -d /sys/firmware/efi ]];then
+				mount_efi_drive
+			else
+				echo "Not in EFI environment"
+			fi
+		else
+			echo "No drive passed as parameter, continue on user selected partition"
+			format_volume "${DRIVE}"
+			# sleep for one secon, so that all partions are populated
+			sleep 1;
+			# mount partion
+			mount_volume "${DRIVE}"
+			if [[ -d /sys/firmware/efi ]];then
+				mount_efi_drive
+			else
+				echo "Not in EFI environment"
+			fi
+		fi
+	else 
+		# if user delected only one partition to be created for whole disk
+		if [ ${DISKPARTOPT} == "1P" ];then
+			create_one_partitions_of_whole_disk "${DISK}"
+		# if user delected two partition to be created for whole disk
+		elif [ ${DISKPARTOPT} == "2P" ];then
+			create_two_partitions_of_equal_size "${DISK}"
+		fi
+	fi
+	copy_files
+	createSwapFile
+	chroot_mount
+	# if DISPARTOPT is empty then fstab setup on drive
+	if [ -z ${DISKPARTOPT} ];then
+		echo "No option selected for disk partition"
+		fstab_setup ${DRIVE}
+	else
+		if [ ${DISKPARTOPT} == "1P" ];then
+			if [[ -d /sys/firmware/efi ]];then
+				# if user selceted only one partion to be created
+				# first partition will be efi partition i.e. /dev/sda1
+				# second partionin will be the root partion i.e. /dev/sda2	
+				fstab_setup "${DISK}2"
+			else
+				# if the USB/DVB booted in BIOS mode then
+				# if user selceted only one partion to be created
+				# first partition will be the root partion i.e. /dev/sda1
+				fstab_setup "${DISK}1"
+			fi
+
+		elif [ ${DISKPARTOPT} == "2P" ];then
+			if [[ -d /sys/firmware/efi ]];then
+				# if the USB/DVB booted in UEFI mode then
+				# if user selceted only two partions to be created
+				# first partition will be efi partition i.e. /dev/sda1
+				# second partition will be the root partion i.e. /dev/sda2	
+				# third partition will be the data partition i.e. /dev/sda3
+				fstab_setup "${DISK}2"
+			else
+				# if the USB/DVB booted in BIOS mode then
+				# if user selceted only two partions to be created
+				# first partition will be the root partion i.e. /dev/sda1	
+				# second partition will be the data partition i.e. /dev/sda3
+				fstab_setup "${DISK}1"
+			fi
+		fi		
+	fi	
+	genrate_locale
+	systemd_setup
+	add_user
+	generate_cache	
+	final_setting
+	make_initramfs
+	install_grub
+	umount_volume
+}
+
+main "$@"

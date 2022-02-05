@@ -1,0 +1,48 @@
+#!/bin/bash
+
+if [ ! -d "/home/liveuser/Desktop" ]; then
+    mkdir -p /home/liveuser/Desktop
+fi
+cat > /home/liveuser/Desktop/Installer.desktop << "EOF"
+#!/usr/bin/env xdg-open
+[Desktop Entry]
+Version=1.0
+Type=Application
+Terminal=false
+Icon=system-software-install
+Name[en_US]=Install Avouch Linux
+Exec=/usr/bin/adi %u
+Name=Avouch Linux Installer
+Comment=Install Avouch Linux
+EOF
+
+chmod 755 /home/liveuser/Desktop/Installer.desktop
+chown liveuser /home/liveuser/Desktop/Installer.desktop
+
+    # sleep for 3 seconds so that plasma basic configuration be done
+    sleep 3;
+	# set default avouch wallpaper
+	#message "$(gettext "Setting up custom wallpaper for Plasma...")"
+    if [ -f "/usr/share/wallpapers/Avouch/contents/images/3840x2160.jpg" ]; then
+        qdbus org.kde.plasmashell /PlasmaShell org.kde.PlasmaShell.evaluateScript '
+        var allDesktops = desktops();
+        print (allDesktops);
+        for (i=0;i<allDesktops.length;i++) {{
+            d = allDesktops[i];
+            d.wallpaperPlugin = "org.kde.image";
+            d.currentConfigGroup = Array("Wallpaper",
+                                        "org.kde.image",
+                                        "General");
+            d.writeConfig("Image", "file:///usr/share/wallpapers/Avouch/contents/images/3840x2160.jpg")
+        }}
+        '
+    fi
+# add items to favourites
+if [ -f "/usr/bin/dconf" ]; then
+    dconf write /org/gnome/shell/favorite-apps "['gparted.desktop', 'firefox.desktop', 'empathy.desktop',  'libreoffice-writer.desktop', 'nautilus.desktop', 'yelp.desktop', 'Installer.desktop']"
+fi
+# show files on desktop
+if [ -f "/usr/bin/gsettings" ]; then
+    gsettings set org.gnome.desktop.background show-desktop-icons true
+fi
+/usr/bin/adi

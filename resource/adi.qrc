@@ -1,0 +1,17 @@
+<RCC>
+    <qresource prefix="/">
+        <file>images/1.png</file>
+        <file>images/2.png</file>
+        <file>images/3.png</file>
+        <file>images/4.png</file>
+        <file>images/WatermarkPixmapWelcome.png</file>
+        <file>images/WatermarkPixmapEula.png</file>
+        <file>images/WatermarkPixmapDiskSetup.png</file>
+        <file>images/WatermarkPixmapUserSetup.png</file>
+        <file>images/WatermarkPixmapCopyingFiles.png</file>
+        <file>images/WatermarkPixmapCompleted.png</file>
+        <file>images/welcome.png</file>
+        <file>images/WatermarkPixmapPartitionSetup.png</file>
+        <file>qss/default.qss</file>
+    </qresource>
+</RCC>

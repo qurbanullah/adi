@@ -1,0 +1,45 @@
+
+QWidget { background-color: #0b2732; }
+
+QLineEdit { border: 1px solid gray; padding: 4px; margin: 4px;}
+
+QTextEdit { border: 1px solid gray; }
+
+QCheckBox { color: white; }
+
+QCheckBox::checked  { color: green; }
+
+QRadioButton::checked { color:green; }
+
+QTableWidget { border: 1px solid gray; }
+
+QTableWidget::item {
+    border-style: none;
+    border-bottom: 1px solid gray;
+    border-right: 1px solid gray;
+}
+
+QTableWidget::item::selected {
+    background-color:  #2e86c1;
+    border-style: none;
+    border-bottom: 1px solid green;
+    border-right: 1px solid green;
+}
+
+QHeaderView::section {
+    background-color: green;
+    padding: 4px;
+    border-style: none;
+    border-bottom: 1px solid gray;
+    border-right: 1px solid gray;
+}
+
+QHeaderView::section:horizontal
+{
+    border-top: 1px solid gray;
+}
+
+QHeaderView::section:vertical
+{
+    border-left: 1px solid gray;
+}

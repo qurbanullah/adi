@@ -1,0 +1,34 @@
+#!/bin/bash
+
+# set umask to 022 so that the files created by root will be with 644 permission
+# and directory will be created with permission 750
+# our default mask in profile is 027 (moderate security)
+umask 022
+
+disks=${1}
+
+# this script find all the partition and strip the out put as required
+
+#!/bin/bash
+# 1. populate the partitions with parted
+# 2. extract only first two lines with head
+# 3. combine first and second line with past and so on
+# 4. filter out Disk workdir
+# 5. filter out Model: word
+# 6. replace /dev with :/dev so that we can get three column in QT
+
+# make sure that previos file removed before writing new partitions.
+if [ -f "/tmp/disks.txt" ]; then
+	rm "/tmp/disks.txt"
+fi
+#echo -e "$(parted -l | grep -E 'Model|dev' | paste -d " "  - - | sed 's/Disk//' | sed 's/Model://' | sed 's,/dev,:/dev,g')" 2>&1 >> "/tmp/disks.txt"
+
+# 1. populate dis info with lsblk
+# 2. add dev at the begning of the disk name with sed
+# 3. Replace spaces with : by using sed
+# 4. Replace the repition 3 times of : with one :
+# 5. replace the repition of 2 : with one :
+echo -e "$(lsblk -Sno NAME,SIZE,MODEL | sed -e '/sr0/d' | sed 's,^sd,/dev/sd,g' | sed -e 's/ /:/g' | sed -e 's/:\{3\}/:/g' | sed -e 's/:\{2\}/:/g')" 2>&1 >> "/tmp/disks.txt"
+
+
+# echo -e "$(fdisk -l | grep -E 'Disk' | sed '/label/d' | sed '/identifier/d' | sed 's/Disk//')" 2>&1 >> "/tmp/disks.txt"

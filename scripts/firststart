@@ -1,0 +1,44 @@
+#!/bin/bash
+
+    sleep 3;
+	# set default avouch wallpaper
+	#message "$(gettext "Setting up custom wallpaper for Plasma...")"
+	qdbus org.kde.plasmashell /PlasmaShell org.kde.PlasmaShell.evaluateScript '
+    var allDesktops = desktops();
+    print (allDesktops);
+    for (i=0;i<allDesktops.length;i++) {{
+        d = allDesktops[i];
+        d.wallpaperPlugin = "org.kde.image";
+        d.currentConfigGroup = Array("Wallpaper",
+                                     "org.kde.image",
+                                     "General");
+        d.writeConfig("Image", "file:///usr/share/wallpapers/Avouch/contents/images/3840x2160.jpg")
+    }}
+	'
+
+# add items to favourites
+# dconf write /org/gnome/shell/favorite-apps "['firefox.desktop', 'empathy.desktop', 'libreoffice-writer.desktop', 'nautilus.desktop', 'yelp.desktop']"
+
+# show files on desktop
+#gsettings set org.gnome.desktop.background show-desktop-icons true
+
+# cleanup
+# sudo /usr/bin/postdoc
+
+# sudo /usr/bin/update-initramfs
+# sudo /usr/bin/grub-mkconfig -o /boot/grub/grub.cfg
+
+sudo ee -u adi
+
+#sudo rm /usr/bin/adi
+#sudo rm /usr/bin/findpartition
+#sudo rm /usr/bin/livestart
+#sudo rm /usr/bin/copyfiles
+#sudo rm /usr/bin/adiscript
+#sudo rm /usr/bin/postdoc
+#sudo rm /usr/share/applications/Installer.desktop
+#sudo rm -rf /usr/share/licenses/adi
+#sudo rm /etc/xdg/autostart/avouch-first-start.desktop
+#sudo rm /usr/bin/firststart
+
+
