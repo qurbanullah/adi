@@ -800,6 +800,14 @@ generate_cache(){
 
 }
 
+remove_unneeded_packages() {
+	if [ $(cat /proc/cpuinfo | grep Intel) ]; then
+		chroot ${CHROOTDIR} /usr/bin/ee -r amd-ucode
+	elif [ $(cat /proc/cpuinfo | grep amd) ]; then
+		chroot ${CHROOTDIR} /usr/bin/ee -r intel-ucode
+	fi
+}
+
 final_setting(){
 
 	# enable first start

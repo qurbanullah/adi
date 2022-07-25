@@ -23,7 +23,7 @@ if [ -f "/tmp/disks.txt" ]; then
 fi
 #echo -e "$(parted -l | grep -E 'Model|dev' | paste -d " "  - - | sed 's/Disk//' | sed 's/Model://' | sed 's,/dev,:/dev,g')" 2>&1 >> "/tmp/disks.txt"
 
-# 1. populate dis info with lsblk
+# 1. populate disk info with lsblk
 # 2. add dev at the begning of the disk name with sed
 # 3. Replace spaces with : by using sed
 # 4. Replace the repition 3 times of : with one :
