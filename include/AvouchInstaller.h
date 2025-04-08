@@ -162,6 +162,8 @@ private:
 
 /******************* End of of Partition Page *****************************************/
 
+#include <QRegularExpression>
+#include <QRegularExpressionValidator>
 class UserPage : public QWizardPage
 {
     Q_OBJECT

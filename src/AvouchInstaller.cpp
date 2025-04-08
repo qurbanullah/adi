@@ -4,7 +4,6 @@
 #include <QProcess>
 #include <QDebug>
 #include <QRect>
-#include <QDesktopWidget>
 #include <QFileSystemWatcher>
 
 #include "include/AvouchInstaller.h"
@@ -842,7 +841,7 @@ UserPage::UserPage(QWidget *parent)
     lineEdit_username = new QLineEdit;
     lineEdit_username->setMaximumWidth(500);
     lineEdit_username->setMinimumSize(200, 40);
-    lineEdit_username->setValidator(new QRegExpValidator(QRegExp("[\\w\\d_ \\.]{24}"), this));
+    lineEdit_username->setValidator(new QRegularExpressionValidator(QRegularExpression("[\\w\\d_ \\.]{24}"), this));
     label_username->setBuddy(lineEdit_username);
 
     label_hostname = new QLabel(tr("Computer / Host Name:"));
